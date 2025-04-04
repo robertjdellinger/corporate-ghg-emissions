@@ -1,0 +1,1291 @@
+---
+title: "**Quantifying Corporate Carbon Emissions in the United States Using the EPA GHGRP**"
+author: "Robert J. Dellinger"
+date: "Last Updated: 2025"
+output:
+  html_document:
+    fig_caption: true
+    css: default
+header-includes:
+  # Set page margins using geometry package
+  - \usepackage{geometry}
+  - \geometry{left=1in, right=1in, top=1in, bottom=1in}
+  
+  # Enable double-spacing for readability
+  - \usepackage{setspace}
+  - \doublespacing
+  
+  # Customize the header and footer using fancyhdr
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhead[L]{}
+  - \fancyhead[C]{Scientific Hypothesis and Preliminary Data Explorations}
+  - \fancyhead[R]{}
+  - \fancyfoot[L]{}
+  - \fancyfoot[C]{\thepage}
+  - \fancyfoot[R]{}
+  - \renewcommand{\headrulewidth}{0.2pt}
+  - \renewcommand{\footrulewidth}{0pt}
+---
+
+------------------------------------------------------------------------
+
+```{=html}
+<style>
+  /* Set a white background and ensure readable font styles */
+  body {
+    background-color: white !important;
+    color: black !important;
+    font-family: "Georgia", serif;
+    line-height: 1.6;
+  }
+  /* Improve header spacing */
+  h1, h2, h3, h4, h5, h6 {
+    margin-top: 20px;
+    margin-bottom: 10px;
+  }
+</style>
+```
+
+# Introduction
+
+This notebook leverages self-reported EPA emissions data from both direct emitters and suppliers to quantify greenhouse gas (GHG) emissions by attributing them to corporate parent companies. By allocating each facility's emissions based on its ownership stakes, the analysis provides a comprehensive measure of corporate carbon responsibility. For more detailed information on the EPA’s Greenhouse Gas Reporting Program (GHGRP), please visit the [EPA's website](https://www.epa.gov/ghgreporting) or consult the [EPA helpdesk FAQ](https://www.epa.gov/ghgreporting/ghgrp-helpdesk). Additional documentation on the methodology and context for this analysis can be found in the project repository README file.
+
+```{r setup, include=FALSE}
+# Set global chunk options
+knitr::opts_chunk$set(echo = TRUE, results = "asis")
+
+# Load the necessary libraries
+library(tidyverse)  
+library(readxl)      
+library(ggplot2)     
+library(janitor)     
+library(readxlsb)     
+library(purrr)
+library(here)
+library(dplyr)
+library(gt)
+library(RColorBrewer)
+library(forcats)
+library(progress)
+library(scales)
+```
+
+
+
+# Corporate Emissions (National)
+
+## EPA GHGP Summary Data
+
+This code block processes EPA GHGRP summary data files stored in the “Data/Raw/GHGP_data_summary_spreadsheets” directory. The data is sourced from Excel files for each year from 2016 to 2023 that contain multiple sheets (e.g., “Direct Point Emitters”, “Onshore Oil & Gas Prod.”, etc.). Although data is available from 2010 onward, note that the additional sheets—such as those for onshore oil & gas production, gathering & boosting, transmission pipelines, LDC - Direct Emissions, SF₆ from Electrical Equipment, and Suppliers—are not available before 2016. Consequently, the code loops over the specified years and sheets to combine the available data into a single list, with each element corresponding to a specific sheet type.
+
+
+```{r GHGP-data, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Define years of interest (note: data for 2010-2015 may be incomplete)
+years <- 2016:2023  
+
+# List of sheet names to be read from each Excel file
+sheets_to_read <- c(
+  "Direct Point Emitters", 
+  "Onshore Oil & Gas Prod.", 
+  "Gathering & Boosting",
+  "Transmission Pipelines", 
+  "LDC - Direct Emissions",
+  "SF6 from Elec. Equip.", 
+  "Suppliers"
+)
+
+# Set the directory where GHGRP summary spreadsheets are stored
+local_data_dir <- here("Data", "Raw", "EPA_GHGRP_Data_Summary_Spreadsheets")
+
+# Initialize an empty list to store combined data for each sheet type
+GHGP_combined_data <- setNames(vector("list", length(sheets_to_read)), sheets_to_read)
+
+# Loop through each year
+for (year in years) {
+  file_name <- paste0("ghgp_data_", year, ".xlsx")
+  file_path <- file.path(local_data_dir, file_name)
+
+  # Check if file exists; if not, skip the year
+  if (!file.exists(file_path)) {
+    message("File not found for year ", year, ": ", file_path)
+    next
+  }
+
+  # Get the list of sheets available in the current file
+  available_sheets <- excel_sheets(file_path)
+
+  # Loop through each desired sheet
+  for (sheet in sheets_to_read) {
+    if (sheet %in% available_sheets) {
+      message("Reading ", sheet, " for year ", year)
+      # Attempt to read the sheet; skip the first 3 rows (adjust as needed)
+      sheet_data <- tryCatch({
+        read_excel(file_path, sheet = sheet, skip = 3, col_types = "text") %>%
+          clean_names() %>%                          # Standardize column names
+          mutate(year = year, .before = 1,
+                 facility_name = str_replace_all(facility_name, "[[:punct:]]", ""),
+                 facility_name = str_remove(facility_name, "[-/(].*")) %>% 
+          mutate(across(everything(), toupper)) %>% 
+          mutate(across(everything(), str_squish))
+      }, error = function(e) {
+        message("Failed to read sheet: ", sheet, " in year ", year, " — ", e$message)
+        NULL
+      })
+
+      # If the sheet was successfully read, combine it with any previous data
+      if (!is.null(sheet_data)) {
+        GHGP_combined_data[[sheet]] <- bind_rows(GHGP_combined_data[[sheet]], sheet_data)
+      }
+    } else {
+      message("Sheet not found: ", sheet, " in year ", year)
+    }
+  }
+}
+
+# Print the combined data for verification
+head(GHGP_combined_data$`Direct Point Emitters`) %>% gt() %>% gt::fmt_auto()
+head(GHGP_combined_data$Suppliers) %>% gt() %>% gt::fmt_auto()
+#print(head(GHGP_combined_data$`Onshore Oil & Gas Prod.`))
+#print(head(GHGP_combined_data$`Gathering & Boosting`))
+#print(head(GHGP_combined_data$`Transmission Pipelines`))
+#print(head(GHGP_combined_data$`LDC - Direct Emissions`))
+#print(head(GHGP_combined_data$`SF6 from Elec. Equip.`))
+
+```
+
+
+## NAICS Code Data
+
+This section loads the NAICS Codes data, which provides industry classification codes and titles. This information is essential for contextualizing the sectors in which the facilities operate, supporting further analysis. The NAICS codes file is obtained from the Census website. This data will be merged with the EPA emissions data to assign industry titles to each facility based on its NAICS code.
+
+
+```{r NCAIS-data, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Define local path using `here`
+naics_local_path <- here("Data", "Raw", "NAICS_Codes", "6-digit_2022_Codes.xlsx")
+
+# Read the file, skipping any third column (like notes or descriptions)
+naics <- read_excel(
+  naics_local_path,
+  col_names = TRUE,
+  col_types = c('numeric', 'text', 'skip')  # skip third column if present
+)
+
+# Select and clean only the relevant columns
+naics <- naics %>%
+  select(`2022 NAICS Code`, `2022 NAICS Title`) %>%
+  slice(-1) # remove first row it's blank
+
+# Create a manual patch table (for missing naics codes in the ghgp)
+naics_patch <- tribble(
+  ~`2022 NAICS Code`, ~`2022 NAICS Title`,
+  211112, "Natural Gas Liquid Extraction",
+  325188, "All Other Basic Inorganic Chemical Manufacturing",
+  325192, "Other Synthetic Organic Dye and Pigment Manufacturing",
+  333999, "All Other Miscellaneous General Purpose Machinery Manufacturing",
+  335222, "Household Refrigerator and Home Freezer Manufacturing",
+  336111, "Automobile Manufacturing",
+  441310, "Automotive Parts and Accessories Stores"
+)
+
+# Bind the patch table to the main NAICS data
+naics <- bind_rows(naics, naics_patch) %>% 
+  mutate(across(everything(), toupper)) %>% 
+  mutate(`2022 NAICS Code` = as.numeric(`2022 NAICS Code`))
+
+# Print
+head(naics) %>% gt() %>% gt::fmt_auto()
+```
+
+## GHGP Parent Company Data
+
+This section loads the EPA GHGRP Parent Company Data file available from the EPA.It contains information on the parent companies that own (or partially own) facilities reporting GHG emissions, including the percentage of ownership.Combining data across multiple years (2016-2023) allows us to link facility-level emissions with ownership details, enabling the attribution of emissions to corporate entities.
+
+
+```{r GHGP-data-parent, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Define path
+parent_company_path <- here("Data", "Raw", "EPA_GHGRP_Data_Parent_Company", "ghgp_data_parent_company.xlsb")
+
+# Confirmed sheet names (adjust if needed)
+sheet_names <- c("2016", "2017", "2018", "2019", "2020", "2021", "2022", "2023")
+
+# Initialize progress bar
+pb <- progress_bar$new(total = length(sheet_names), format = "Reading sheet :sheet [:bar] :percent")
+
+# Read each sheet with error handling and progress update
+parent_company_data_combined <- map(sheet_names, function(sheet) {
+  pb$tick(tokens = list(sheet = sheet))
+  tryCatch(
+    read_xlsb(parent_company_path, sheet = sheet),
+    error = function(e) {
+      message("Failed to read sheet: ", sheet)
+      NULL
+    }
+  )
+})
+
+# Combine all sheets in the list into one dataframe
+parent_company_data_full <- bind_rows(parent_company_data_combined, .id = "year_index")
+
+# Convert year column to character for merge later
+parent_company_data <- parent_company_data_full %>%
+  clean_names() %>% 
+  mutate(across(everything(), toupper)) %>%
+  mutate(facility_name = str_remove(facility_name, "[-/(].*"),
+         facility_name = str_replace_all(facility_name, "[[:punct:]]", ""),
+         parent_company_name = str_replace_all(parent_company_name, "[[:punct:]]", "")) %>% 
+  mutate(across(everything(), str_squish)) %>% 
+  mutate(Facility = as.character(ghgrp_facility_id),
+         Year = as.numeric(reporting_year),
+         parent_co_percent_ownership = as.numeric(parent_co_percent_ownership),
+         .keep="unused")
+
+# Preview the first few rows of the combined NAICS codes data.
+#glimpse(parent_company_data) 
+```
+
+
+
+# Emissions Data Wrangling 
+
+The emissions data are presented in several different sections of EPA's spreadsheet, so here we compile them all together. Emissions are measured in metric tons of CO2 equivalent, or tCO₂e (see: https://www.theguardian.com/environment/2011/apr/27/co2e-global-warming-potential). 
+
+
+## Direct Emitter Facilities
+
+This section processes the EPA GHGRP emissions data for direct emitter facilities. The data is sourced from multiple spreadsheets (e.g., “Direct Point Emitters”, “Onshore Oil & Gas Prod.”, etc.) contained within the GHGRP summary files. Each sheet contains different emission metrics measured in metric tons of CO2 equivalent (tCO₂e). The code begins by defining a mapping of sheet names to their corresponding column names for emissions data, ensuring that the correct fields are extracted from each file. It then initializes an empty data frame to compile data across all sheets. For each sheet, the code selects key variables such as facility ID, facility name, NAICS code, and the specified emissions metric, converting the emissions values to numeric format. After compiling the data, it aggregates entries for duplicate facility IDs by summing their emissions. Next, the code merges this aggregated data with the NAICS codes data—sourced from the Census—to assign industry titles to each facility based on its NAICS code. Finally, the data is split by year, and for each year the top 10 direct emitters are displayed using the gt package to generate formatted tables. This structured approach not only cleans and aggregates the emissions data but also contextualizes it by industry, facilitating a clear, year-by-year comparison of facility emissions.
+
+
+```{r Emitter-data, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Correct list of emission field names with the accurate column names from your data frames
+emissions_field_names <- list(
+  "Direct Point Emitters" = "total_reported_direct_emissions",
+  "Onshore Oil & Gas Prod." = "total_reported_emissions_from_onshore_oil_gas_production",  # Corrected name
+  "Gathering & Boosting" = "total_reported_emissions_from_gathering_boosting",             # Corrected name
+  "Transmission Pipelines" = "total_reported_direct_emissions_from_transmission_pipelines",
+  "LDC - Direct Emissions" = "total_reported_direct_emissions_from_local_distribution_companies",
+  "SF6 from Elec. Equip." = "total_reported_direct_emissions_from_electrical_equipment_use"
+)
+
+# Create an empty data frame to store emissions data compiled from direct emitters
+fac_directemitters_data <- data.frame(
+  Facility = character(),
+  Name = character(),
+  `2022 NAICS Code` = character(),
+  `Emissions (tCO₂e)` = numeric(),
+  Year = character(),
+  stringsAsFactors = FALSE
+)
+
+# Compile emissions data across direct emitters for CO2 and NOₓ
+for (key in names(emissions_field_names)) {
+  dump <- GHGP_combined_data[[key]] %>%
+    dplyr::select(facility_id, facility_name, primary_naics_code, year, all_of(emissions_field_names[[key]])) %>%
+    rename(
+      Facility = facility_id,
+      Name = facility_name,
+      `2022 NAICS Code` = primary_naics_code,
+      Year = year,
+      `Emissions (tCO₂e)` = all_of(emissions_field_names[[key]])
+    )
+
+  dump$`Emissions (tCO₂e)` <- as.numeric(dump$`Emissions (tCO₂e)`)
+
+  fac_directemitters_data <- bind_rows(fac_directemitters_data, dump)
+}
+
+# Aggregate duplicate facility IDs
+fac_directemitters_data <- fac_directemitters_data %>%
+  group_by(Year, Facility, Name, `2022 NAICS Code`) %>%
+  summarise(`Emissions (tCO₂e)` = sum(`Emissions (tCO₂e)`, na.rm = TRUE), .groups = "drop")
+
+# Join with NAICS data
+fac_directemitters_data  <- fac_directemitters_data  %>%
+  mutate(`2022 NAICS Code` = as.numeric(`2022 NAICS Code`)) %>% 
+    left_join(naics, by = "2022 NAICS Code")
+
+fac_directemitters_data_table <- fac_directemitters_data %>% 
+  select(-`2022 NAICS Code`, -Facility) %>% 
+  rename(`NAICS Title` = `2022 NAICS Title`) %>% 
+  arrange(desc(`Emissions (tCO₂e)`))
+
+# Split the full data frame by year
+fac_directemitters_by_year <- split(fac_directemitters_data_table, fac_directemitters_data_table$Year) 
+
+# For each year, create and render a GT table showing the top 10 direct emitter parent companies
+lapply(fac_directemitters_by_year, function(df_year) {
+  current_year <- unique(df_year$Year)
+  df_year %>%
+    arrange(desc(`Emissions (tCO₂e)`)) %>%
+    slice_head(n = 10) %>% 
+    gt() %>%
+    tab_header(
+      title = paste("EPA GHGRP Direct Emitters –", current_year),
+      subtitle = "Top 10 Parent Companies by Emissions (tCO₂e)"
+    ) %>%
+    fmt_number(
+      columns = vars(`Emissions (tCO₂e)`),
+      decimals = 0,
+      use_seps = TRUE
+    ) %>%
+    cols_width(
+      Name ~ px(300),
+      `NAICS Title` ~ px(300),
+      `Emissions (tCO₂e)` ~ px(200)
+    ) %>%
+    cols_align(
+      align = "center",
+      columns = everything()
+    )
+})
+```
+
+## Supplier Facilities 
+
+This section processes the supplier facilities data from the EPA GHGRP. It begins by converting various text-based emission fields—such as those for coal-based liquid fuel production and petroleum products—into numeric values, while treating any missing or confidential values as zeros. The code then renames and selects the key columns (facility ID, facility name, NAICS code, emissions, and year) to ensure consistency with the final output format. Next, the supplier data is merged with NAICS Codes to attach industry classification titles to each facility. Finally, the data is organized by year, and for each year the top 10 supplier facilities (sorted by emissions) are displayed using the gt package to create interactive, well-formatted tables.
+
+
+```{r Suppplier-data, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Convert character columns to numeric for the necessary emission fields,
+# treating NAs and confidential values as zeros.
+Suppliers <- GHGP_combined_data$Suppliers %>%
+  mutate(
+    `Emissions (tCO₂e)` = coalesce(
+      as.numeric(gsub("[^0-9.]", "", ghg_quantity_associated_with_coal_based_liquid_fuel_production)), 0) +
+      coalesce(as.numeric(gsub("[^0-9.]", "", ghg_quantity_associated_with_petroleum_products_produced)), 0) +
+      coalesce(as.numeric(gsub("[^0-9.]", "", ghg_quantity_associated_with_petroleum_products_imported)), 0) +
+      coalesce(as.numeric(gsub("[^0-9.]", "", ghg_quantity_associated_with_petroleum_products_exported)), 0) +
+      coalesce(as.numeric(gsub("[^0-9.]", "", ghg_quantity_associated_with_natural_gas_supply)), 0) +
+      coalesce(as.numeric(gsub("[^0-9.]", "", ghg_quantity_associated_with_natural_gas_liquids_supply)), 0) +
+      coalesce(as.numeric(gsub("[^0-9.]", "", ghg_quantity_associated_with_co2_supply)), 0)
+  )
+
+# Rename columns to align with the final output format for suppliers
+fac_suppliers_data <- Suppliers %>%
+  mutate(
+    primary_naics_code = as.numeric(primary_naics_code)
+  ) %>%
+  rename(
+    Facility = facility_id, 
+    Name = facility_name,
+    `2022 NAICS Code` = primary_naics_code, 
+    Year = year
+  ) %>%
+  select(Facility, Name, `2022 NAICS Code`, `Emissions (tCO₂e)`, Year)
+
+# Merge supplier data with NAICS codes to include industry titles
+fac_suppliers_data <- fac_suppliers_data %>%
+  left_join(naics, by = "2022 NAICS Code")
+
+# Prepare a presentation table by removing redundant columns and renaming for clarity
+fac_suppliers_data_table <- fac_suppliers_data %>% 
+  select(-`2022 NAICS Code`, -Facility) %>% 
+  rename(`NAICS Title` = `2022 NAICS Title`) %>% 
+  arrange(desc(`Emissions (tCO₂e)`))
+
+# Split the data by year for per-year reporting
+fac_suppliers_by_year <- split(fac_suppliers_data_table, fac_suppliers_data_table$Year) 
+
+# For each year, create and render a GT table showing the top 10 supplier parent companies
+lapply(fac_suppliers_by_year, function(df_year) {
+  current_year <- unique(df_year$Year)
+  df_year %>%
+    arrange(desc(`Emissions (tCO₂e)`)) %>%
+    slice_head(n = 10) %>% 
+    gt() %>%
+    tab_header(
+      title = paste("EPA GHGP Suppliers –", current_year),
+      subtitle = "Top 10 Parent Companies by Emissions (tCO₂e)"
+    ) %>%
+    fmt_number(
+      columns = vars(`Emissions (tCO₂e)`),
+      decimals = 0,
+      use_seps = TRUE
+    ) %>%
+    cols_width(
+      Name ~ px(300),
+      `NAICS Title` ~ px(300),
+      `Emissions (tCO₂e)` ~ px(200)
+    ) %>%
+    cols_align(
+      align = "center",
+      columns = everything()
+    )
+})
+```
+
+
+
+# Calculating Corporate Emissions 
+
+In this section, we merge the emissions data from direct emitters and suppliers with the parent company information. This allows us to attribute each facility’s reported GHG emissions—measured in metric tons of CO2 equivalent (tCO₂e)—to its owning corporate entities based on their percentage ownership. The following code performs the necessary data type conversions, left joins, and filtering to prepare the data for further analysis.
+
+```{r Joined-data, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Convert relevant columns in parent_company_data to the appropriate types
+parent_company_data <- parent_company_data %>%
+  mutate(
+    Facility = as.character(as.numeric(Facility)),
+    Year = as.numeric(Year)
+  )
+
+# Merge direct emitter data with parent company information
+parent_emitters <- fac_directemitters_data %>%
+  mutate(
+    Facility = as.character(as.numeric(Facility)),
+    Year = as.numeric(Year)
+  ) %>%
+  left_join(parent_company_data, by = c("Facility", "Year")) %>% 
+  filter(`Emissions (tCO₂e)` != 0)
+
+# Merge supplier data with parent company information using a similar approach.
+parent_suppliers <- fac_suppliers_data %>%
+  mutate(
+    Facility = as.character(as.numeric(Facility)),
+    Year = as.numeric(Year)
+  ) %>%
+  left_join(parent_company_data, by = c("Facility", "Year")) %>% 
+  filter(`Emissions (tCO₂e)` != 0)
+
+# Display a sample of the merged data for verification.
+#parent_emitters %>% glimpse() 
+#parent_suppliers%>% glimpse() 
+```
+
+Next, we calculate each parent company’s responsibility for emissions based on their percentage ownership. For each facility, the reported emissions are multiplied by the company’s ownership percentage (divided by 100) to determine the share of emissions attributed to that company.
+
+```{r Corporate-calculations, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# For direct emitters:
+epa_parent_company_emitters <- parent_emitters %>%
+  group_by(Year) %>% 
+  mutate(`Parent Company Emissions (tCO₂e)` = as.numeric(`Emissions (tCO₂e)`) *
+           as.numeric(parent_co_percent_ownership) / 100) %>% 
+  rename(`Parent Company` = parent_company_name)
+
+# For supplier facilities:
+epa_parent_company_suppliers <- parent_suppliers %>%
+  group_by(Year) %>% 
+  mutate(`Parent Company Emissions (tCO₂e)` = as.numeric(`Emissions (tCO₂e)`) *
+           as.numeric(parent_co_percent_ownership) / 100) %>% 
+  rename(`Parent Company` = parent_company_name)
+
+write_csv(epa_parent_company_suppliers, here("Data", "Processed", "EPA_GHGP_Parent_Company_Suppliers.csv"))
+write_csv(epa_parent_company_emitters, here("Data", "Processed", "EPA_GHGP_Parent_Company_Emitters.csv"))
+```
+
+Finally, we summarize the emissions data by parent company and year. The summarized data includes the total emissions attributed to each company and the number of facilities contributing to those emissions. Formatted tables are then generated for each year using the gt package, which creates interactive and publication-ready tables.
+
+```{r Corporate-summary, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Summarize emissions for direct emitters by parent company and year.
+summarized_emitters <- epa_parent_company_emitters %>%
+  group_by(`Parent Company`, Year) %>%
+  summarise(
+    `Parent Company Emissions (tCO₂e)` = sum(as.numeric(`Parent Company Emissions (tCO₂e)`), na.rm = TRUE),
+    `# of Facilities` = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(`Parent Company Emissions (tCO₂e)`)) %>% 
+  ungroup()
+
+# Summarize emissions for supplier facilities by parent company and year.
+suppliers_summarized <- epa_parent_company_suppliers %>%
+  group_by(`Parent Company`, Year) %>%
+  summarise(
+    `Parent Company Emissions (tCO₂e)` = sum(as.numeric(`Parent Company Emissions (tCO₂e)`), na.rm = TRUE),
+    `# of Facilities` = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(`Parent Company Emissions (tCO₂e)`)) %>% 
+  ungroup()
+
+# Define a function that creates a GT table for the top 10 companies per year.
+# The function returns a list of GT tables, one per year.
+print_parent_company_tables <- function(summary_df, title_prefix = "Emitters") {
+  # Extract unique years from the dataset
+  years <- sort(unique(summary_df$Year))
+  # Initialize an empty list to store GT tables
+  gt_tables <- list()
+  
+  # Loop over each year
+  for (yr in years) {
+    # Filter data for the current year and select top 10 companies by emissions
+    gt_table <- summary_df %>%
+      filter(Year == yr) %>%
+      select(-Year) %>%           # Remove Year column for display
+      slice_head(n = 10) %>%      # Select top 10 companies
+      gt() %>%
+      fmt_number(
+        columns = vars(`Parent Company Emissions (tCO₂e)`),
+        decimals = 0,
+        use_seps = TRUE
+      ) %>%
+      cols_label(
+        `Parent Company Emissions (tCO₂e)` = "Emissions (tCO₂e)",
+        `# of Facilities` = "# Facilities"
+      ) %>%
+      cols_width(
+        `Parent Company` ~ px(300),
+        `Parent Company Emissions (tCO₂e)` ~ px(200),
+        `# of Facilities` ~ px(150)
+      ) %>%
+      tab_header(
+        title = paste(title_prefix, "–", yr)
+      )
+    
+    # Add the table to the list using the year as the name
+    gt_tables[[as.character(yr)]] <- gt_table
+  }
+  
+  # Return the list of GT tables
+  return(gt_tables)
+}
+
+# Generate formatted GT tables for direct emitters and supplier emissions.
+direct_emitter_tables <- print_parent_company_tables(summarized_emitters, title_prefix = "EPA GHGP Corporate Direct Emitters")
+supplier_tables <- print_parent_company_tables(suppliers_summarized, title_prefix = "EPA GHGP Corporate Supplier Emissions")
+
+# In an R Markdown document, simply returning the list will render the tables.
+direct_emitter_tables
+supplier_tables
+
+```
+
+
+## Visualizing Top Direct Emitters and Suppliers
+
+This section defines a function that, for each year, filters the summarized emissions data, selects the top 10 parent companies based on their attributed emissions, and generates a horizontal bar chart using ggplot2. The resulting plots offer a clear visual comparison of corporate GHG emissions across different years for both direct emitters and suppliers.
+
+
+```{r parent-companies-plot, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+plot_top_emitters <- function(data, title_prefix = "Emitters") {
+  # Load the stringr package for text wrapping functionality
+  library(stringr)
+  
+  # Define a custom palette of 10 distinct, saturated colors using RColorBrewer's "Paired" palette.
+  custom_colors <- RColorBrewer::brewer.pal(10, "Paired")
+  
+  # Extract and sort the unique years present in the dataset
+  years <- sort(unique(data$Year))
+  
+  # Loop through each year in the dataset
+  for (yr in years) {
+    # Filter data for the current year, sort by emissions in descending order,
+    # select the top 10 companies, and reorder the parent company factor by emissions.
+    df <- data %>%
+      filter(Year == yr) %>%
+      arrange(desc(`Parent Company Emissions (tCO₂e)`)) %>%
+      slice_head(n = 10) %>%
+      mutate(`Parent Company` = fct_reorder(`Parent Company`, `Parent Company Emissions (tCO₂e)`))
+    
+    # Generate a horizontal bar chart using ggplot2:
+    # - geom_col() creates the bars with a fixed width.
+    # - coord_flip() rotates the chart for better readability.
+    # - scale_fill_manual() applies the custom color palette.
+    # - scale_x_discrete() wraps long labels for clarity.
+    # - scale_y_continuous() formats y-axis labels with commas.
+    # - labs() sets the title, subtitle, and axis labels.
+    # - theme_minimal() with additional theme adjustments ensures a clean presentation.
+    p <- ggplot(df, aes(
+      x = `Parent Company`,
+      y = `Parent Company Emissions (tCO₂e)`,
+      fill = `Parent Company`
+    )) +
+      geom_col(width = 0.6, show.legend = FALSE) +
+      coord_flip() +
+      scale_fill_manual(values = custom_colors) +
+      scale_x_discrete(labels = function(x) str_wrap(x, width = 20)) +
+      scale_y_continuous(labels = scales::comma) +
+      labs(
+        title = paste(title_prefix, "-", yr),
+        subtitle = "Top 10 Parent Companies by Emissions",
+        x = "Parent Company",
+        y = "Emissions (tCO₂e)"
+      ) +
+      theme_minimal(base_size = 11) +
+      theme(
+        plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+        plot.subtitle = element_text(size = 11, hjust = 0.5),
+        axis.title.x = element_text(face = "bold", size = 11),
+        axis.title.y = element_text(face = "bold", size = 11),
+        axis.text.y = element_text(size = 10),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_line(color = "grey80"),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA)
+      )
+    
+    # Print the plot for the current year
+    print(p)
+  }
+}
+
+# Example usage: Generate plots for both direct emitters and supplier emissions.
+plot_top_emitters(summarized_emitters, title_prefix = "Direct Emitters")
+plot_top_emitters(suppliers_summarized, title_prefix = "Supplier Emissions")
+```
+
+
+This function aggregates emission data by parent company across the available time period (2016-2013),  selects the top 10 companies based on their total emissions, and generates a horizontal bar chart. The chart visually displays the total emissions attributed to each parent company, facilitating an academic-level comparison across the years. 
+
+```{r top-parent-companies-plot, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# This function aggregates emissions by parent company across all years (2016–2023)
+
+# for improved spacing between axis titles and the axis text.
+plot_top_10_parent_companies <- function(data, title = "Top 10 Parent Companies (2016–2023)") {
+  # Aggregate data: group by Parent Company and sum their emissions
+  top10 <- data %>%
+    group_by(`Parent Company`) %>%
+    summarise(`Total Emissions (tCO₂e)` = sum(`Parent Company Emissions (tCO₂e)`, na.rm = TRUE)) %>%
+    arrange(desc(`Total Emissions (tCO₂e)`)) %>%
+    slice_head(n = 10) %>%
+    mutate(`Parent Company` = fct_reorder(`Parent Company`, `Total Emissions (tCO₂e)`))
+  
+  # Define a custom palette of 10 distinct, saturated colors using RColorBrewer's "Paired" palette.
+  custom_colors <- RColorBrewer::brewer.pal(10, "Paired")
+  
+  # Create a horizontal bar chart using ggplot2 with refined aesthetics.
+  p <- ggplot(top10, aes(x = `Parent Company`, y = `Total Emissions (tCO₂e)`, fill = `Parent Company`)) +
+    geom_col(width = 0.6, show.legend = FALSE) +       # Fixed bar width, no legend.
+    coord_flip() +                                      # Horizontal bars.
+    scale_fill_manual(values = custom_colors) +         # Apply the custom color palette.
+    scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 25)) +  # Wrap long labels.
+    scale_y_continuous(labels = scales::comma) +        # Format y-axis labels with commas.
+    labs(
+      title = title,
+      x = "Parent Company",
+      y = "Total Emissions (tCO₂e)"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+      axis.title.x = element_text(face = "bold", size = 12, margin = margin(t = 10)),
+      axis.title.y = element_text(face = "bold", size = 12, margin = margin(r = 10)),
+      axis.text.y = element_text(size = 10),
+      axis.text.x = element_text(size = 8),
+      panel.grid.major.y = element_blank(),             # Remove horizontal grid lines.
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_line(color = "grey80"),
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.margin = margin(t = 30, r = 30, b = 30, l = 30)
+    )
+  
+  print(p)
+}
+
+# Generate publication-quality plots using the aggregated data across all years.
+plot_top_10_parent_companies(summarized_emitters, title = "Top 10 Direct Emitters (2016–2023)")
+plot_top_10_parent_companies(suppliers_summarized, title = "Top 10 Supplier Emissions (2016–2023)")
+```
+
+
+## Share of Emissions by Corporations
+
+This section calculates the percentage share of total emissions (in tCO₂e) accounted for by the top 50 parent companies for each year. The analysis is performed separately for direct emitters and suppliers, providing insights into the quantities of emissions among the largest corporate entities. The code filters the summarized data for each year, calculates the total emissions, selects the top 50 companies based on emissions, and computes the percentage share of emissions attributed to these companies. The results are displayed for each year, highlighting the contribution of the top 50 companies to the total emissions in the dataset.
+
+
+```{r top50-share, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# This code calculates the percentage share of total emissions (tCO₂e)  accounted for by the top 50 parent companies for each year, separately for direct emitters and suppliers.
+
+# Calculate shares for Direct Emitters
+direct_shares <- summarized_emitters %>%
+  group_by(Year) %>%
+  nest() %>%
+  mutate(
+    Total_Emissions = map_dbl(data, ~ sum(.x$`Parent Company Emissions (tCO₂e)`, na.rm = TRUE)),
+    Top10_Emissions = map_dbl(data, ~ sum(slice_max(.x, order_by = `Parent Company Emissions (tCO₂e)`, n = 10)$`Parent Company Emissions (tCO₂e)`, na.rm = TRUE)),
+    Top50_Emissions = map_dbl(data, ~ sum(slice_max(.x, order_by = `Parent Company Emissions (tCO₂e)`, n = 50)$`Parent Company Emissions (tCO₂e)`, na.rm = TRUE))
+  ) %>%
+  mutate(
+    `Top 10 Share (%)` = round(Top10_Emissions / Total_Emissions * 100, 1),
+    `Top 50 Share (%)` = round(Top50_Emissions / Total_Emissions * 100, 1)
+  ) %>%
+  select(Year, `Top 10 Share (%)`, `Top 50 Share (%)`) %>% 
+  ungroup() %>% 
+  arrange(desc(Year))
+
+# Display a GT table for Direct Emitters
+direct_shares %>% 
+  gt() %>%
+  tab_header(
+    title = "Direct Emitters: Percentage Share by Top Companies",
+    subtitle = "Percentage share of total emissions accounted for by the top 10 and top 50 companies"
+  ) %>%
+  fmt_percent(
+    columns = c(`Top 10 Share (%)`, `Top 50 Share (%)`),
+    decimals = 1,
+    scale_values = FALSE
+  ) 
+
+
+# Calculate shares for Suppliers
+suppliers_shares <- suppliers_summarized %>%
+  group_by(Year) %>%
+  nest() %>%
+  mutate(
+    Total_Emissions = map_dbl(data, ~ sum(.x$`Parent Company Emissions (tCO₂e)`, na.rm = TRUE)),
+    Top10_Emissions = map_dbl(data, ~ sum(slice_max(.x, order_by = `Parent Company Emissions (tCO₂e)`, n = 10)$`Parent Company Emissions (tCO₂e)`, na.rm = TRUE)),
+    Top50_Emissions = map_dbl(data, ~ sum(slice_max(.x, order_by = `Parent Company Emissions (tCO₂e)`, n = 50)$`Parent Company Emissions (tCO₂e)`, na.rm = TRUE))
+  ) %>%
+  mutate(
+    `Top 10 Share (%)` = round(Top10_Emissions / Total_Emissions * 100, 1),
+    `Top 50 Share (%)` = round(Top50_Emissions / Total_Emissions * 100, 1)
+  ) %>%
+  select(Year, `Top 10 Share (%)`, `Top 50 Share (%)`) %>% 
+  ungroup() %>% 
+  arrange(desc(Year))
+
+# Display a GT table for Suppliers
+suppliers_shares %>% 
+  gt() %>%
+  tab_header(
+    title = "Suppliers: Percentage Share by Top Companies",
+    subtitle = "Percentage share of total emissions accounted for by the top 10 and top 50 companies"
+  ) %>%
+  fmt_percent(
+    columns = c(`Top 10 Share (%)`, `Top 50 Share (%)`),
+    decimals = 1,
+    scale_values = FALSE
+  )
+```
+
+The top 50 direct emitters are responsible for ~50% share of total emissions. The top 10 suppliers account for ~85% of total emissions. This analysis provides insights about the relative contributions of the largest corporate entities to overall emissions.
+
+
+## Social Cost of Corporate Emissions
+
+This section quantifies the Social Cost of Carbon (SCC) for each corporate parent by applying a predetermined SCC value (in USD per metric ton of CO2 equivalent) to the reported emissions. The SCC represents the present value of the future damages caused by one additional ton of CO2, encompassing impacts such as reduced agricultural productivity, adverse health outcomes, and increased infrastructure damage from extreme weather events. Seminal works like “The ‘Social Cost of Carbon’ Made Simple” (Newbold et al., 2010) and subsequent studies illustrate that the SCC captures the comprehensive economic cost of climate change. In this analysis, each corporate parent’s emissions (in tCO₂e) are multiplied by an EPA estimated SCC value—allowing for adjustments based on evolving scientific and economic estimates.
+
+### Direct Emitter Facilities
+
+```{r social-carbon-cost-emitter, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Aggregate direct emitter data across all years by summing emissions per parent company.
+direct_total <- summarized_emitters %>%
+  group_by(`Parent Company`) %>%
+  summarise(Total_Emissions = sum(`Parent Company Emissions (tCO₂e)`, na.rm = TRUE)) %>%
+  ungroup()
+
+# Select the top 50 companies by total emissions.
+top_direct <- direct_total %>%
+  arrange(desc(Total_Emissions)) %>%
+  slice_head(n = 50)
+
+# Calculate SCC values for direct emitters for three scenarios without formatting.
+direct_total_scc <- top_direct %>%
+  mutate(
+    SCC_51 = Total_Emissions * 51,
+    SCC_100 = Total_Emissions * 100,
+    SCC_150 = Total_Emissions * 150
+  )
+
+# Compute a summary (total) row that aggregates all the values for the top 50 companies.
+direct_total_summary <- direct_total_scc %>%
+  summarise(
+    `Parent Company` = "TOTAL",
+    Total_Emissions = sum(Total_Emissions, na.rm = TRUE),
+    SCC_51 = sum(SCC_51, na.rm = TRUE),
+    SCC_100 = sum(SCC_100, na.rm = TRUE),
+    SCC_150 = sum(SCC_150, na.rm = TRUE)
+  )
+
+# Append the summary row to the dataset.
+direct_total_scc_combined <- bind_rows(direct_total_scc, direct_total_summary)
+
+# Format the SCC columns as dollar amounts and Total Emissions with commas.
+direct_total_scc_combined %>%
+  mutate(
+    Total_Emissions = scales::comma(Total_Emissions, accuracy = 1),
+    SCC_51 = scales::dollar(SCC_51),
+    SCC_100 = scales::dollar(SCC_100),
+    SCC_150 = scales::dollar(SCC_150)
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Social Cost of Carbon: Top 50 Direct Emitters (2016–2023)",
+    subtitle = "Estimated Present Value of Future Damages"
+  ) %>%
+  cols_label(
+    `Parent Company` = "Parent Company",
+    Total_Emissions = "Total Emissions (tCO₂e)",
+    SCC_51 = "SCC @ $51/tCO2",
+    SCC_100 = "SCC @ $100/tCO2",
+    SCC_150 = "SCC @ $150/tCO2"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = c(Total_Emissions, SCC_51, SCC_100, SCC_150)
+  )
+
+```
+
+### Supplier Facilities
+
+```{r social-carbon-cost-supplier, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Aggregate supplier data across all years by summing emissions per parent company.
+suppliers_total <- suppliers_summarized %>%
+  group_by(`Parent Company`) %>%
+  summarise(Total_Emissions = sum(`Parent Company Emissions (tCO₂e)`, na.rm = TRUE)) %>%
+  ungroup()
+
+# Select the top 10 companies by total emissions.
+top_suppliers <- suppliers_total %>%
+  arrange(desc(Total_Emissions)) %>%
+  slice_head(n = 10)
+
+# Calculate SCC values for suppliers for the three scenarios.
+suppliers_total_scc <- top_suppliers %>%
+  mutate(
+    SCC_51 = Total_Emissions * 51,
+    SCC_100 = Total_Emissions * 100,
+    SCC_150 = Total_Emissions * 150
+  )
+
+# Compute a summary (total) row for the supplier data.
+suppliers_total_summary <-suppliers_total_scc %>%
+  summarise(
+    `Parent Company` = "TOTAL",
+    Total_Emissions = sum(Total_Emissions, na.rm = TRUE),
+    SCC_51 = sum(SCC_51, na.rm = TRUE),
+    SCC_100 = sum(SCC_100, na.rm = TRUE),
+    SCC_150 = sum(SCC_150, na.rm = TRUE)
+  )
+
+# Append the summary row to the supplier data.
+suppliers_total_scc_combined <- bind_rows(suppliers_total_scc, suppliers_total_summary)
+
+# Format the data and create a GT table for suppliers.
+suppliers_total_scc_combined %>%
+  mutate(
+    Total_Emissions = scales::comma(Total_Emissions, accuracy = 1),
+    SCC_51 = scales::dollar(SCC_51),
+    SCC_100 = scales::dollar(SCC_100),
+    SCC_150 = scales::dollar(SCC_150)
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Social Cost of Carbon: Top 10 Suppliers (2016–2023)",
+    subtitle = "Estimated Present Value of Future Damages"
+  ) %>%
+  cols_label(
+    `Parent Company` = "Parent Company",
+    Total_Emissions = "Total Emissions (tCO₂e)",
+    SCC_51 = "SCC @ $51/tCO2",
+    SCC_100 = "SCC @ $100/tCO2",
+    SCC_150 = "SCC @ $150/tCO2"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = c(Total_Emissions, SCC_51, SCC_100, SCC_150)
+  )
+
+```
+
+
+
+# Corporate Emissions (State)
+
+## Direct Emitter Facilities
+
+This section focuses on direct emitter facilities in a specific state (e.g., California) by filtering the parent company emissions data for the selected state. The code groups the data by parent company and year, calculates the total emissions and the number of facilities. The resulting tables display the top 10 parent companies by emissions for each year, providing insights into the corporate entities with the highest direct emissions in the chosen state.
+
+
+```{r GHGP-state-data-emitter, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Set the target state (modify as needed)
+state_choice <- "CA"
+
+# Filter direct emitter data for the selected state, grouping by parent company and year.
+direct_state <- epa_parent_company_emitters %>%
+  filter(facility_state == state_choice) %>%
+  group_by(`Parent Company`, Year) %>%
+  summarise(
+    Direct_Emissions = sum(`Emissions (tCO₂e)`, na.rm = TRUE),
+    Direct_Facilities = n(),
+    .groups = "drop"
+  ) %>%
+  # Remove entries with zero or NA emissions
+  filter(Direct_Emissions != 0, !is.na(Direct_Emissions))
+
+# Split the data by year so that we can create separate tables for each year.
+direct_state_by_year <- direct_state %>% group_split(Year)
+
+# Initialize an empty list to store the GT tables.
+gt_tables_direct <- list()
+
+# Loop through each year's data and generate a GT table for the top 10 direct emitter parent companies.
+for (dt in direct_state_by_year) {
+  # Get the current year (should be unique for each split)
+  current_year <- unique(dt$Year)
+  
+  # Create the GT table for the current year's data.
+  gt_table_direct <- dt %>%
+    arrange(desc(Direct_Emissions)) %>%
+    slice_head(n = 10) %>%
+    select(-Year) %>% 
+    gt() %>%
+    tab_header(
+      title = paste("EPA GHGP Direct Emitter Corporate Emissions in", state_choice, "for Year", current_year),
+      subtitle = "Top 10 Parent Companies by Emissions (tCO₂e)"
+    ) %>%
+    cols_label(
+      `Parent Company` = "Parent Company",
+      Direct_Emissions = "Direct Emissions (tCO₂e)",
+      Direct_Facilities = "Direct Facilities"
+    ) %>%
+    fmt_number(
+      columns = vars(Direct_Emissions),
+      decimals = 0,
+      use_seps = TRUE
+    ) %>%
+    cols_align(
+      align = "center",
+      columns = everything()
+    )
+  
+  # Store the table in the list using the year as the name.
+  gt_tables_direct[[as.character(current_year)]] <- gt_table_direct
+}
+
+# Return the list of GT tables (R Markdown will render each table in the list).
+gt_tables_direct
+```
+
+## Supplier Facilities
+
+```{r GHGP-state-data-supplier, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Set the target state (modify as needed)
+state_choice <- "CA"
+
+# Filter supplier data for the selected state, grouping by parent company and year.
+supplier_state <- epa_parent_company_suppliers %>%
+  filter(facility_state == state_choice) %>%
+  group_by(`Parent Company`, Year) %>%
+  summarise(
+    Supplier_Emissions = sum(`Emissions (tCO₂e)`, na.rm = TRUE),
+    Supplier_Facilities = n(),
+    .groups = "drop"
+  ) %>%
+  # Remove entries with zero or NA emissions.
+  filter(Supplier_Emissions != 0, !is.na(Supplier_Emissions))
+
+# Split the supplier data by year.
+supplier_state_by_year <- supplier_state %>% group_split(Year)
+
+# Initialize an empty list to store GT tables for each year.
+gt_tables_supplier <- list()
+
+# Loop through each year's data and generate a GT table for the top 10 supplier parent companies.
+for (dt in supplier_state_by_year) {
+  current_year <- unique(dt$Year)
+  
+  # Create the GT table for the current year.
+  gt_table_supplier <- dt %>%
+    arrange(desc(Supplier_Emissions)) %>%
+    slice_head(n = 10) %>%
+    select(-Year) %>%
+    gt() %>%
+    tab_header(
+      title = paste("EPA GHGP Supplier Corporate Emissions in", state_choice, "for Year", current_year),
+      subtitle = "Top 10 Parent Companies by Emissions (tCO₂e)"
+    ) %>%
+    cols_label(
+      `Parent Company` = "Parent Company",
+      Supplier_Emissions = "Supplier Emissions (tCO₂e)",
+      Supplier_Facilities = "Supplier Facilities"
+    ) %>%
+    fmt_number(
+      columns = vars(Supplier_Emissions),
+      decimals = 0,
+      use_seps = TRUE
+    ) %>%
+    cols_align(
+      align = "center",
+      columns = everything()
+    )
+  
+  # Store the table in the list using the year as the name.
+  gt_tables_supplier[[as.character(current_year)]] <- gt_table_supplier
+}
+
+# Return the list of GT tables.
+gt_tables_supplier
+
+```
+
+
+
+# National Trends in Corporate Emissions
+
+## US Government Emissions 
+
+This code filters the parent‐company emissions data for rows where the parent company is “US GOVERNMENT”. It then groups the data by year, calculates the total emissions and counts the number of facilities.
+
+
+```{r government-emissions, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Filter for US Government facilities, group by Year, and calculate totals.
+government_corporate_emissions <- epa_parent_company_emitters %>%
+  filter(`Parent Company` == "US GOVERNMENT") %>%
+  group_by(Year) %>%
+  summarise(
+    `Total Emissions (tCO₂e)` = sum(`Emissions (tCO₂e)`, na.rm = TRUE),
+    `# of Facilities` = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Year))
+
+# Create and print a GT table for US Government corporate emissions.
+government_corporate_emissions %>%
+  gt() %>%
+  tab_header(
+    title = "US Government Corporate Emissions",
+    subtitle = "Total Emissions and Facility Count by Year (2016–2023)"
+  ) %>%
+  fmt_number(
+    columns = c(`Total Emissions (tCO₂e)`),
+    decimals = 0,
+    use_seps = TRUE
+  ) %>%
+  cols_label(
+    Year = "Year",
+    `Total Emissions (tCO₂e)` = "Total Emissions (tCO₂e)",
+    `# of Facilities` = "# of Facilities"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) 
+
+```
+
+## National Security Emissions
+
+This snippet selects facilities whose “2022 NAICS Title” is “National Security”. It then groups and summarizes the data by year and creates a  table showing the total emissions and facility counts.
+
+
+```{r national-security-emissions, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Filter for National Security facilities, group by Year, and calculate totals.
+national_security_emissions <- epa_parent_company_emitters %>%
+  filter(`2022 NAICS Title` == "NATIONAL SECURITY") %>%
+  group_by(Year) %>%
+  summarise(`Total Emissions (tCO₂e)` = sum(`Emissions (tCO₂e)`, na.rm = TRUE),
+            `# of Facilities` = n(),
+            .groups = "drop"
+  ) %>%
+  arrange(desc(Year))
+
+# Create and print a GT table for National Security emissions.
+national_security_emissions %>%
+  gt() %>%
+  tab_header(
+    title = "National Security Emissions",
+    subtitle = "Total Emissions and Facility Count by Year (2016–2023)"
+  ) %>%
+  fmt_number(
+    columns = c(`Total Emissions (tCO₂e)`),
+    decimals = 0,
+    use_seps = TRUE
+  ) %>%
+  cols_label(
+    Year = "Year",
+    `Total Emissions (tCO₂e)` = "Total Emissions (tCO₂e)",
+    `# of Facilities` = "# of Facilities"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  )
+
+```
+
+## University Emissions
+
+This code filters for facilities categorized under “Colleges, Universities, and Professional Schools.” It standardizes facility names by converting to uppercase, removing text following symbols (such as “-”, “/” or “(”), and trimming extra whitespace. It then removes unwanted tokens (e.g., “POWER PLANT”, “MEDICAL SCHOOL”) from the names and aggregates emissions by year and university.
+
+
+```{r university-emissions, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Filter for facilities in the "Colleges, Universities, and Professional Schools" sector.
+university_emissions <- epa_parent_company_emitters %>%
+  filter(`2022 NAICS Title` == "COLLEGES, UNIVERSITIES, AND PROFESSIONAL SCHOOLS") %>%
+  group_by(Year, Name) %>% 
+  # Standardize facility names: convert to uppercase, remove text after "-" or "(" or "/" and trim whitespace.
+  mutate(
+    Name = str_to_upper(Name),
+    Name = str_remove(Name, "[-/(].*"),
+    Name = str_squish(Name)
+  )
+
+# Define a vector of unwanted phrases to remove from the names.
+unwanted_terms <- c(
+  "MAIN PWR PLANT", "UTILITY PLANT", "MU POWER PLANTL HEAT PLANT",
+  "PHYSICAL PLANT BUILDING", "CENTRAL HEAT PLANT", "CENTRAL POWER PLANT",
+  "STEAM PLANT", "HEATING PLANT", "MU POWER PLANT", "CENTRAL PLANT",
+  "POWER PLANT", "MAIN CAMPUS", "HEALTH SCIENCES CAMPUS", "MEDICAL SCHOOL",
+  "CAMPUS", "THE PRESIDENT AND FELLOWS OF", "MEDICAL CENTER"
+)
+pattern_unwanted <- paste(unwanted_terms, collapse = "|")
+
+# Clean the university names by removing unwanted tokens and re-aggregate.
+university_emissions_clean <- university_emissions %>%
+  mutate(Name = str_remove_all(Name, regex(pattern_unwanted, ignore_case = TRUE))) %>% 
+  group_by(Year, Name) %>%
+  summarise(
+    `Total Emissions (tCO₂e)` = sum(`Emissions (tCO₂e)`, na.rm = TRUE)
+  ) %>%
+  arrange(desc(Year), desc(`Total Emissions (tCO₂e)`))
+
+# Here we select the top 10 for each year.
+top10_universities <- university_emissions_clean %>%
+  group_by(Year) %>%
+  slice_head(n = 10) 
+
+# Create and print a single GT table with all the top 5 per year.
+top10_universities %>%
+  gt() %>%
+  tab_header(
+    title = "US University Emissions (2016–2023)",
+    subtitle = "Top 5 Universities by Total Emissions (tCO₂e) for Each Year"
+  ) %>%
+  fmt_number(
+    columns = vars(`Total Emissions (tCO₂e)`),
+    decimals = 0,
+    use_seps = TRUE
+  ) %>%
+  cols_label(
+    Year = "Year",
+    Name = "University",
+    `Total Emissions (tCO₂e)` = "Total Emissions (tCO₂e)"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = everything()
+  )
+
+# Calculate cumulative emissions for each university across all years.
+top10_cumulative <- university_emissions_clean %>% 
+  group_by(Name) %>% 
+  summarise(Cumulative_Emissions = sum(`Total Emissions (tCO₂e)`, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(Cumulative_Emissions)) %>% 
+  slice_head(n = 10) %>% 
+  pull(Name)
+
+# Filter the complete dataset to include only these top 10 universities.
+top10_universities <- university_emissions_clean %>%
+  filter(Name %in% top10_cumulative)
+
+# Create a line plot to show the emissions trend over time for the top 10 universities.
+ggplot(top10_universities, aes(x = Year, y = `Total Emissions (tCO₂e)`, color = Name, group = Name)) +
+  geom_line(size = 1.2) +                  # Draw lines for each university
+  geom_point(size = 3) +                   # Add points for each observation
+  scale_y_continuous(labels = comma) +     # Format y-axis labels with commas
+  labs(
+    title = "Emissions Trend for Top 10 US Universities",
+    x = "Year",
+    y = "Total Emissions (tCO₂e)",
+    color = "University"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.position = "right",
+    legend.text = element_text(size = 7),
+  )
+
+```
+
+
+# Merging FRS and EPA Data for Census Analysis
+
+Downloaded the FRS National Single CSV File from the EPA’s Facility Registry Service on. This file contains information about facilities regulated under multiple EPA environmental programs. Given its size, we loaded and trimmed the dataset to retain only relevant columns (e.g., EPA Registry ID, program acronym, location data, facility name, sector). This script loads the EPA FRS data, cleans it by converting key identifiers to the correct type, and joins it with the EPA parent company emissions data. Next, it aggregates the emissions at the census block level. Later, you can merge this aggregated emissions dataset with Census data (for example, median household income or demographic data) using shared geographic identifiers (like census tract or block group). 
+
+```{r FRS}
+# ------------------------------------------------------------------------------
+# Facility Registry Service (FRS) National Dataset
+# Source: https://www.epa.gov/frs/epa-frs-facilities-state-single-file-csv-download
+# Downloaded full U.S. file (FRS_NATIONAL_SINGLE.CSV) 
+# ------------------------------------------------------------------------------
+# File size: ~2 GB — cleaned and trimmed to reduce memory load
+# ------------------------------------------------------------------------------
+
+# Load dataset — change this to your local filepath
+#frs <- read_csv("DATA DOWNLOAD LOCATION HERE")
+
+# Define keywords corresponding to the systems you need
+#keywords <- c("E-GGRT", "EGRID", "CAMDBS", "AFS", "AIR", "TRI", "ICIS-AIR", "EMISSIONS", "GREENHOUSE GAS")
+#pattern <- paste(keywords, collapse = "|") 
+
+
+#frs_cleaned <- frs %>%
+#  filter(grepl(pattern, INTEREST_TYPES, ignore.case = TRUE)) %>% 
+#  select(REGISTRY_ID,
+#         FRS_FACILITY_DETAIL_REPORT_URL,
+#         LATITUDE83,
+#         LONGITUDE83,
+#         LOCATION_ADDRESS, 
+#         CENSUS_BLOCK_CODE,
+#         CITY_NAME,
+#         FIPS_CODE,
+#         STATE_CODE, 
+#         POSTAL_CODE, 
+#         COUNTY_NAME,
+#         SIC_CODES,
+#         NAICS_CODES,
+#         HUC_CODE,
+#         TRIBAL_LAND_CODE,
+#         PGM_SYS_ACRNMS,
+#         CONGRESSIONAL_DIST_NUM) %>% 
+#  clean_names() 
+
+#write.csv(frs_cleaned, 
+          #here("Data", "Raw", "EPA_Facility_Registry_Service_Data", "FRS_NATIONAL.csv"), 
+          #row.names = FALSE)
+```
+
+
+```{r census-data, echo=TRUE, include=TRUE, message=FALSE, warning=FALSE}
+
+# Load the EPA FRS Query data
+FRS_ID <- read_csv(here("Data", "Raw", "EPA_Facility_Registry_Service_Data", "FRS_NATIONAL.csv"))
+
+# Convert the REGISTRY_ID column to character
+FRS_ID <- FRS_ID %>% 
+  mutate(registry_id = as.character(registry_id))
+
+frs_epa_parent_company_emitters <- epa_parent_company_emitters %>%
+  left_join(FRS_ID, by = c("frs_id_facility" = "registry_id")) %>%
+  filter(!is.na(frs_id_facility)) %>%
+  select(-all_of("frs_id_facility")) %>% 
+  clean_names() %>% 
+  select(year, facility, name, emissions_t_co2e, census_block_code, facility_city, facility_zip, facility_state,
+  facility_county, parent_company, parent_company_emissions_t_co2e, longitude=longitude83, latitude=latitude83,
+  frs_facility_detail_report_url)
+
+# Calculate total emissions per census block
+emissions_by_census_block <- frs_epa_parent_company_emitters %>%
+  group_by(census_block_code, facility_county, facility_state, year) %>%
+  summarise(
+    total_emissions_t_co2e = sum(emissions_t_co2e, na.rm = TRUE),
+    facility_count = n()
+  ) 
+
+write.csv(emissions_by_census_block, 
+          here::here("Data", "Processed", "EPA_GHGP_Emissions_by_Census_Block.csv"),
+          row.names = FALSE)
+```
+
