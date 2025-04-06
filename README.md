@@ -10,7 +10,7 @@ This repository presents an R-based walkthrough that adapts the approach develop
 - **Attribution:** Calculate each parent company’s share of GHG emissions based on ownership stakes.
 - **Insights:** Identify which companies account for the highest emissions and enable further analysis by state, county, or sector (e.g., universities, municipalities).
   
-⸻
+---
 # Quantifying Corporate Carbon Emissions
 
 ## Data Sources
@@ -65,13 +65,13 @@ Download the raw EPA data files from the links above and place them in the Data/
 5.	Open and Knit the R Markdown File:
 Open Scripts/Corporate-GHG-Emissions.Rmd in RStudio and click Knit to generate the full analysis report.
 
-⸻
+---
 
 ## Acknowledgments
 
 This analysis is adapted from the EDGI “Owning Up” tool, originally developed using Python. For more details on their work, please visit the [EDGI website](https://www.environmentalenforcementwatch.org/). All files are organized using best practices, with data stored in the **Data** folder and the main R Markdown file in the **Scripts** folder.
 
-⸻
+---
 
 ### **Contact Information:**
 **Robert J. Dellinger**  
@@ -80,5 +80,5 @@ This analysis is adapted from the EDGI “Owning Up” tool, originally develope
 
 [![GitHub](https://img.shields.io/badge/GitHub-rob--dellinger-181717?logo=github&logoColor=white)](https://github.com/rob-dellinger)  
 
-⸻
+---
 
