@@ -73,8 +73,12 @@ This analysis is adapted from the EDGI “Owning Up” tool, originally develope
 
 ⸻
 
-## Contact
+### **Contact Information:**
+**Robert J. Dellinger**  
+**Ph.D. Student, Atmospheric & Oceanic Sciences, UCLA**  
+**rjdellinger[at]ucla.edu**  
 
-For questions, issues, or contributions, please open an issue in this repository or contact Robert J Dellinger.
+[![GitHub](https://img.shields.io/badge/GitHub-rob--dellinger-181717?logo=github&logoColor=white)](https://github.com/rob-dellinger)  
 
 ⸻
+
