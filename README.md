@@ -1,5 +1,5 @@
 ---
-Corporate GHG Emissions Analysis
+# Corporate GHG Emissions Analysis
 ---
 
 ## Background 
