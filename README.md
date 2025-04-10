@@ -46,7 +46,7 @@ To load the file go into the Scritps folder and either open the HTML or clone th
 ### Option 1: Using the HTML Report
 
 - You can view the report by clicking the link below or copying it into your browser:
-[Corporate Polluters Calculations HTML Report](https://htmlpreview.github.io/?https://raw.githubusercontent.com/robertjdellinger/corporate-ghg-emissions/main/Scripts/corporate-ghg-emissions.html)
+[Corporate Polluters Calculations HTML Report](https://htmlpreview.github.io/?https://raw.githubusercontent.com/robertjdellinger/corporate-ghg-emissions/main/Scripts/01_corporate-ghg-emissions.html)
 
 ### Option 2: Clone and Run the R Markdown File
 
